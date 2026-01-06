@@ -91,6 +91,11 @@ public class GPUBoids : MonoBehaviour
     [Tooltip("Dimensions of the simulation volume (boids are contained within)")]
     public Vector3 WallSize = new Vector3(32.0f, 32.0f, 32.0f);
     
+    [Header("Mouse Attractor")]
+    [HideInInspector] public Vector3 AttractorPosition;
+    [HideInInspector] public float AttractorStrength;
+    [HideInInspector] public bool AttractorEnabled;
+    
     #endregion
 
     #region Shader References
@@ -147,6 +152,17 @@ public class GPUBoids : MonoBehaviour
     public Vector3 GetSimulationAreaSize()
     {
         return WallSize;
+    }
+    
+    /// <summary>
+    /// Reinitializes the simulation with a new boid count.
+    /// Releases existing buffers and creates new ones.
+    /// </summary>
+    public void ReinitializeWithCount(int newCount)
+    {
+        ReleaseBuffer();
+        MaxObjectNum = Mathf.Clamp(newCount, 256, 65536);
+        InitBuffer();
     }
     
     #endregion
@@ -275,6 +291,9 @@ public class GPUBoids : MonoBehaviour
         cs.SetVector("_WallCenter", WallCenter);
         cs.SetVector("_WallSize", WallSize);
         cs.SetFloat("_AvoidWallWeight", AvoidWallWeight);
+        cs.SetVector("_AttractorPosition", AttractorPosition);
+        cs.SetFloat("_AttractorStrength", AttractorStrength);
+        cs.SetInt("_AttractorEnabled", AttractorEnabled ? 1 : 0);
         
         // Bind buffers for force calculation
         cs.SetBuffer(kernelId, "_BoidDataBufferRead", _boidDataBuffer);

@@ -29,6 +29,9 @@ float _CohesionWeight;
 float4 _WallCenter;
 float4 _WallSize;
 float _AvoidWallWeight;
+float4 _AttractorPosition;
+float _AttractorStrength;
+int _AttractorEnabled;
 
 float3 limit(float3 vec, float max)
 {
@@ -54,7 +57,18 @@ float3 avoidWall(float3 position)
     acc.z = (position.z < wc.z - ws.z * 0.5) ? acc.z + 1.0 : acc.z;
     acc.z = (position.z > wc.z + ws.z * 0.5) ? acc.z - 1.0 : acc.z;
     
-    return acc;
+return acc;
+}
+
+float3 attractToPoint(float3 position, float3 target, float strength)
+{
+    float3 dir = target - position;
+    float dist = length(dir);
+    if (dist > 0.1)
+    {
+        return normalize(dir) * strength;
+    }
+    return float3(0, 0, 0);
 }
 
 groupshared BoidData boid_data[SIMULATION_BLOCK_SIZE];
@@ -156,9 +170,13 @@ void IntegrateCS
 )
 {
     const unsigned int P_ID = DTid.x;
-    BoidData b = _BoidDataBufferWrite[P_ID];
+BoidData b = _BoidDataBufferWrite[P_ID];
     float3 force = _BoidForceBufferRead[P_ID];
     force += avoidWall(b.position) * _AvoidWallWeight;
+    if (_AttractorEnabled > 0)
+    {
+        force += attractToPoint(b.position, _AttractorPosition.xyz, _AttractorStrength);
+    }
     b.velocity += force * _DeltaTime;
     b.velocity = limit(b.velocity, _MaxSpeed);
     b.position += b.velocity * _DeltaTime;
