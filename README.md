@@ -6,6 +6,12 @@
 
 ---
 
+## 📺 Demo Video
+[![Watch the Demo](https://img.youtube.com/vi/zoZexSNFHc8/0.jpg)](https://youtu.be/zoZexSNFHc8)  
+*Click the image to watch the simulation demo on YouTube.*
+
+---
+
 ## 🎥 Key Technologies
 
 ### 1. Craig Reynolds' Boids Algorithm
