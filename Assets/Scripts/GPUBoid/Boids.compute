@@ -1,69 +1,98 @@
+// -----------------------------------------------------------------------------
+// Boids Simulation Compute Shader
+// -----------------------------------------------------------------------------
+// This shader implements a flocking simulation based on Reynolds' Boids algorithm.
+// It uses two kernels: one for calculating forces (ForceCS) and one for 
+// updating positions and velocities (IntegrateCS).
+// -----------------------------------------------------------------------------
+
 #pragma kernel ForceCS
 #pragma kernel IntegrateCS
 
+// Data structure representing a single Boid
 struct BoidData
 {
-    float3 velocity;
-    float3 position;
+    float3 velocity; // Current velocity vector
+    float3 position; // Current position vector
 };
 
+// Thread block size for the simulation
 #define SIMULATION_BLOCK_SIZE 256
 
-StructuredBuffer<BoidData> _BoidDataBufferRead;
+// -----------------------------------------------------------------------------
+// Buffers and Uniforms
+// -----------------------------------------------------------------------------
 
+// Input buffer containing the current state of all boids
+StructuredBuffer<BoidData> _BoidDataBufferRead;
+// Output buffer to write the updated state of all boids
 RWStructuredBuffer<BoidData> _BoidDataBufferWrite;
 
+// Input buffer containing forces calculated in the previous step (or frame)
 StructuredBuffer<float3> _BoidForceBufferRead;
-
+// Output buffer to store the forces calculated in the ForceCS kernel
 RWStructuredBuffer<float3> _BoidForceBufferWrite;
-int _MaxBoidObjectNum;
-float _DeltaTime;
-float _SeparateNeighborhoodRadius;
-float _AlignmentNeighborhoodRadius;
-float _CohesionNeighborhoodRadius;
-float _MaxSpeed;
-float _MaxSteerForce;
-float _SeparateWeight;
-float _AlignmentWeight;
-float _CohesionWeight;
-float4 _WallCenter;
-float4 _WallSize;
-float _AvoidWallWeight;
-float4 _AttractorPosition;
-float _AttractorStrength;
-int _AttractorEnabled;
 
+// Simulation parameters
+int _MaxBoidObjectNum;                 // Total number of boids
+float _DeltaTime;                      // Time elapsed since the last frame
+float _SeparateNeighborhoodRadius;     // Radius for separation logic
+float _AlignmentNeighborhoodRadius;    // Radius for alignment logic
+float _CohesionNeighborhoodRadius;     // Radius for cohesion logic
+float _MaxSpeed;                       // Maximum speed a boid can travel
+float _MaxSteerForce;                  // Maximum steering force that can be applied
+float _SeparateWeight;                 // Weight multiplier for separation force
+float _AlignmentWeight;                // Weight multiplier for alignment force
+float _CohesionWeight;                 // Weight multiplier for cohesion force
+
+// Environment parameters
+float4 _WallCenter;                    // Center position of the bounding box (wall)
+float4 _WallSize;                      // Dimensions of the bounding box
+float _AvoidWallWeight;                // Strength of the force pushing away from walls
+float4 _AttractorPosition;             // Position of the attractor (target)
+float _AttractorStrength;              // Strength of the attraction force
+int _AttractorEnabled;                 // Flag to enable/disable the attractor
+
+// -----------------------------------------------------------------------------
+// Helper Functions
+// -----------------------------------------------------------------------------
+
+// Limits the magnitude of a vector to a maximum value
 float3 limit(float3 vec, float max)
 {
     float length = sqrt(dot(vec, vec));
+    // If length exceeds max and is non-zero, scale it down to max
     return (length > max && length > 0) ? vec.xyz * (max / length) : vec.xyz;
-
 }
 
+// Calculates a force to push the boid away from the bounding box walls
 float3 avoidWall(float3 position)
 {
     float3 wc = _WallCenter.xyz;
     float3 ws = _WallSize.xyz;
     float3 acc = float3(0, 0, 0);
 
-    
-    // x
+    // Check bounds on X axis
     acc.x = (position.x < wc.x - ws.x * 0.5) ? acc.x + 1.0 : acc.x;
     acc.x = (position.x > wc.x + ws.x * 0.5) ? acc.x - 1.0 : acc.x;
-    // y
+    
+    // Check bounds on Y axis
     acc.y = (position.y < wc.y - ws.y * 0.5) ? acc.y + 1.0 : acc.y;
     acc.y = (position.y > wc.y + ws.y * 0.5) ? acc.y - 1.0 : acc.y;
-    // z
+    
+    // Check bounds on Z axis
     acc.z = (position.z < wc.z - ws.z * 0.5) ? acc.z + 1.0 : acc.z;
     acc.z = (position.z > wc.z + ws.z * 0.5) ? acc.z - 1.0 : acc.z;
     
-return acc;
+    return acc;
 }
 
+// Calculates a force to attract the boid towards a target position
 float3 attractToPoint(float3 position, float3 target, float strength)
 {
     float3 dir = target - position;
     float dist = length(dir);
+    // Apply attraction only if distance is reasonable (prevents jitters near center)
     if (dist > 0.1)
     {
         return normalize(dir) * strength;
@@ -71,114 +100,163 @@ float3 attractToPoint(float3 position, float3 target, float strength)
     return float3(0, 0, 0);
 }
 
+// Shared memory to optimize memory access patterns during force calculation.
+// Boids are loaded into this shared memory in blocks.
 groupshared BoidData boid_data[SIMULATION_BLOCK_SIZE];
 
+// -----------------------------------------------------------------------------
+// Force Calculation Kernel
+// -----------------------------------------------------------------------------
+// Calculates the Separation, Alignment, and Cohesion forces for each boid.
+// Uses a tile-based approach to compare each boid against all others efficiently.
 [numthreads(SIMULATION_BLOCK_SIZE, 1, 1)]
 void ForceCS
 (
-    uint3 DTid : SV_DispatchThreadID,
-    uint3 Gid : SV_GroupID,
-    uint3 GTid : SV_GroupThreadID,
-    uint GI : SV_GroupIndex
+    uint3 DTid : SV_DispatchThreadID, // Global thread ID
+    uint3 Gid : SV_GroupID,           // Group ID
+    uint3 GTid : SV_GroupThreadID,    // Thread ID within the group
+    uint GI : SV_GroupIndex           // Flattened group index
 )
 {
-    const unsigned int P_ID = DTid.x;
+    const unsigned int P_ID = DTid.x; // Current Boid ID
     float3 P_position = _BoidDataBufferRead[P_ID].position;
     float3 P_velocity = _BoidDataBufferRead[P_ID].velocity;
     
     float3 force = float3(0, 0, 0);
     
+    // Accumulators for Separation
     float3 sepPosSum = float3(0, 0, 0);
     int sepCount = 0;
     
+    // Accumulators for Alignment
     float3 aliVelSum = float3(0, 0, 0);
     int aliCount = 0;
     
+    // Accumulators for Cohesion
     float3 cohPosSum = float3(0, 0, 0);
     int cohCount = 0;
     
+    // Iterate over all boids in blocks to utilize shared memory
     [loop]
     for (uint N_block_ID = 0; N_block_ID < (uint) _MaxBoidObjectNum; N_block_ID += SIMULATION_BLOCK_SIZE)
     {
+        // Load a block of boid data into shared memory
         boid_data[GI] = _BoidDataBufferRead[N_block_ID + GI];
+        
+        // Wait for all threads in the group to finish loading
         GroupMemoryBarrierWithGroupSync();
+
+        // Compare current boid (P) against all boids in the loaded block (N)
         for (int N_tile_ID = 0; N_tile_ID < SIMULATION_BLOCK_SIZE; N_tile_ID++)
         {
             float3 N_position = boid_data[N_tile_ID].position;
             float3 N_velocity = boid_data[N_tile_ID].velocity;
+            
             float3 diff = P_position - N_position;
             float dist = sqrt(dot(diff, diff));
             
+            // Separation: steer to avoid crowding local flockmates
             if (dist > 0.0 && dist <= _SeparateNeighborhoodRadius)
             {
                 float3 repulse = normalize(P_position - N_position);
-                repulse /= dist;
+                repulse /= dist; // Weight by inverse distance
                 sepPosSum += repulse;
                 sepCount++;
             }
             
+            // Alignment: steer towards the average heading of local flockmates
             if (dist > 0.0 && dist <= _AlignmentNeighborhoodRadius)
             {
                 aliVelSum += N_velocity;
                 aliCount++;
             }
             
+            // Cohesion: steer to move toward the average position of local flockmates
             if (dist > 0.0 && dist <= _CohesionNeighborhoodRadius)
             {
                 cohPosSum += N_position;
                 cohCount++;
             }
         }
+        // Wait for all threads to finish processing the current block before loading the next
         GroupMemoryBarrierWithGroupSync();
     }
 
+    // --- Calculate final steering forces ---
+
+    // 1. Separation Force
     float3 sepSteer = (float3) 0.0;
     if (sepCount > 0)
     {
-        sepSteer = sepPosSum / (float) sepCount;
-        sepSteer = normalize(sepSteer) * _MaxSpeed;
-        sepSteer = sepSteer - P_velocity;
-        sepSteer = limit(sepSteer, _MaxSteerForce);
+        sepSteer = sepPosSum / (float) sepCount;     // Average
+        sepSteer = normalize(sepSteer) * _MaxSpeed;  // Desired velocity
+        sepSteer = sepSteer - P_velocity;            // Steering force
+        sepSteer = limit(sepSteer, _MaxSteerForce);  // Limit force
     }
+
+    // 2. Alignment Force
     float3 aliSteer = (float3) 0.0;
     if (aliCount > 0)
     {
-        aliSteer = aliVelSum / (float) aliCount;
-        aliSteer = normalize(aliSteer) * _MaxSpeed;
-        aliSteer = aliSteer - P_velocity;
-        aliSteer = limit(aliSteer, _MaxSteerForce);
+        aliSteer = aliVelSum / (float) aliCount;     // Average velocity
+        aliSteer = normalize(aliSteer) * _MaxSpeed;  // Desired velocity
+        aliSteer = aliSteer - P_velocity;            // Steering force
+        aliSteer = limit(aliSteer, _MaxSteerForce);  // Limit force
     }
+
+    // 3. Cohesion Force
     float3 cohSteer = (float3) 0.0;
     if (cohCount > 0)
     {
-        cohPosSum = cohPosSum / (float) cohCount;
-        cohSteer = cohPosSum - P_position;
-        cohSteer = normalize(cohSteer) * _MaxSpeed;
-        cohSteer = cohSteer - P_velocity;
-        cohSteer = limit(cohSteer, _MaxSteerForce);
+        cohPosSum = cohPosSum / (float) cohCount;    // Center of mass
+        cohSteer = cohPosSum - P_position;           // Vector to center
+        cohSteer = normalize(cohSteer) * _MaxSpeed;  // Desired velocity
+        cohSteer = cohSteer - P_velocity;            // Steering force
+        cohSteer = limit(cohSteer, _MaxSteerForce);  // Limit force
     }
+
+    // Combine forces with weights
     force += aliSteer * _AlignmentWeight;
     force += cohSteer * _CohesionWeight; 
     force += sepSteer * _SeparateWeight;
+
+    // Write the accumulated force to the buffer
     _BoidForceBufferWrite[P_ID] = force;
 }
 
+// -----------------------------------------------------------------------------
+// Integration Kernel
+// -----------------------------------------------------------------------------
+// Updates the position and velocity of each boid based on the calculated forces,
+// wall avoidance, and attractor forces.
 [numthreads(SIMULATION_BLOCK_SIZE, 1, 1)]
 void IntegrateCS
 (
-    uint3 DTid : SV_DispatchThreadID
+    uint3 DTid : SV_DispatchThreadID // Global thread ID
 )
 {
-    const unsigned int P_ID = DTid.x;
-BoidData b = _BoidDataBufferWrite[P_ID];
+    const unsigned int P_ID = DTid.x; // Current Boid ID
+    
+    // Read current boid state (Note: Reading from Write buffer as it holds current state for next frame calculation? 
+    // Usually Read/Write are swapped. Assuming Logic handles Ping-Pong buffers correctly)
+    BoidData b = _BoidDataBufferWrite[P_ID]; 
+    
+    // Read the calculated flocking forces
     float3 force = _BoidForceBufferRead[P_ID];
+    
+    // Add environmental forces
     force += avoidWall(b.position) * _AvoidWallWeight;
+    
     if (_AttractorEnabled > 0)
     {
         force += attractToPoint(b.position, _AttractorPosition.xyz, _AttractorStrength);
     }
+    
+    // Apply Physics (Euler Integration)
     b.velocity += force * _DeltaTime;
-    b.velocity = limit(b.velocity, _MaxSpeed);
+    b.velocity = limit(b.velocity, _MaxSpeed); // Cap speed
     b.position += b.velocity * _DeltaTime;
+    
+    // Write back the updated state
     _BoidDataBufferWrite[P_ID] = b;
 }
