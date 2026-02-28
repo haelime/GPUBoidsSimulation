@@ -1,106 +1,156 @@
-# Unity GPU Boids Simulation
+# GPU Boids Simulation
 
-[English Version](#english)
+[한국어](#korean) | [English](#english)
 
-## 프로젝트 개요
-이 프로젝트는 Unity Compute Shader를 사용해 Boids 군집 알고리즘을 GPU에서 대규모 병렬 처리하는 데모입니다.  
-현재 코드 기준으로 `ForceCS`와 `IntegrateCS` 2단계 커널을 매 프레임 실행하고, `DrawMeshInstancedIndirect`로 보이드를 한 번에 렌더링합니다.
+<a id="korean"></a>
+## 한국어
 
-- 기본 보이드 수: `16,384`
-- 최대 보이드 수(UI): `65,536` (256 단위로 반올림)
-- 렌더링: GPU 인스턴싱 기반 간접 드로우
-- 인터랙션: 마우스 기반 흡인/반발 + 실시간 UI 튜닝
+### 프로젝트 소개
+Unity Compute Shader와 GPU Instancing을 활용해 대규모 Boids 군집 시뮬레이션을 실시간으로 구동하는 프로젝트입니다.  
+CPU 중심 구현에서 자주 발생하는 병목(개체 수 증가 시 급격한 프레임 저하)을 GPU 병렬 처리로 완화하는 데 초점을 맞췄습니다.
 
-## 데모 영상
-[![Watch the Demo](https://img.youtube.com/vi/zoZexSNFHc8/0.jpg)](https://youtu.be/zoZexSNFHc8)
+### 데모 자료
+- 씬: `Assets/Scenes/Main.unity`
+- (선택) 영상 링크가 있다면 여기에 추가: `https://youtu.be/your-demo`
 
-## 현재 코드 구조
-```text
-Assets/
-  Scenes/
-    Main.unity
-  Scripts/
-    GPUBoid/
-      GPUBoids.cs         # 시뮬레이션 파라미터, 버퍼 관리, 커널 Dispatch
-      Boids.compute       # ForceCS / IntegrateCS
-      BoidRender.cs       # DrawMeshInstancedIndirect 렌더링
-    Demo/
-      BoidSimulationUI.cs # 슬라이더/버튼 UI
-      MouseAttractor.cs   # 마우스 흡인/반발
-      CameraController.cs # 궤도 카메라
-      FPSCounter.cs       # FPS 표시
-      EscToExit.cs        # ESC 종료
-  Shaders/
-    BoidsRender.shader    # StructuredBuffer 기반 인스턴스 변환/조명
-```
+### 기술 스택
+| 구분 | 내용 |
+|---|---|
+| Engine | Unity `6000.2.6f2` |
+| Rendering | URP `17.2.0` |
+| Simulation | Compute Shader (HLSL) |
+| Runtime | C# MonoBehaviour |
+| GPU Draw | `Graphics.DrawMeshInstancedIndirect` |
+| UI | uGUI + TextMeshPro |
 
-## 시뮬레이션 파이프라인
+### 시스템 아키텍처
 ```mermaid
-graph TD
-    A[ForceCS] --> B[Separation / Alignment / Cohesion 계산]
-    B --> C[IntegrateCS]
-    C --> D[속도/위치 Euler 적분]
-    D --> E[BoidsRender.cs]
-    E --> F[DrawMeshInstancedIndirect]
+flowchart LR
+    UI[BoidSimulationUI.cs\n실시간 파라미터 입력]
+    INPUT[MouseAttractor.cs\n마우스 힘 입력]
+    CTRL[GPUBoids.cs\n버퍼 관리 + 커널 Dispatch]
+    FORCE[Boids.compute::ForceCS\n분리/정렬/응집 힘 계산]
+    INTEG[Boids.compute::IntegrateCS\n속도/위치 적분]
+    BUFFER[(ComputeBuffer\nBoidData / Force)]
+    RENDER[BoidRender.cs\n간접 인스턴싱 드로우]
+    SHADER[BoidsRender.shader\n속도 기반 회전/스케일]
+    SCREEN[Frame Output]
+
+    UI --> CTRL
+    INPUT --> CTRL
+    CTRL --> FORCE
+    FORCE --> BUFFER
+    CTRL --> INTEG
+    INTEG --> BUFFER
+    BUFFER --> RENDER
+    RENDER --> SHADER
+    SHADER --> SCREEN
 ```
 
-## 실행 환경
-- Unity Editor: `6000.2.6f2`
-- Render Pipeline: `URP (com.unity.render-pipelines.universal 17.2.0)`
-- 주요 언어: `C#`, `HLSL`
+### 프레임 단위 처리 흐름
+```mermaid
+sequenceDiagram
+    participant User as 사용자 입력
+    participant UI as UI/Mouse 스크립트
+    participant CPU as GPUBoids.cs
+    participant GPU as Boids.compute
+    participant Draw as BoidRender.cs
 
-## 실행 방법
-1. Unity Hub에서 프로젝트를 엽니다.
+    User->>UI: 슬라이더 변경 / 마우스 클릭
+    UI->>CPU: 파라미터, attractor 값 전달
+    CPU->>GPU: ForceCS Dispatch
+    GPU-->>CPU: ForceBuffer 갱신(메모리 상)
+    CPU->>GPU: IntegrateCS Dispatch
+    GPU-->>CPU: BoidDataBuffer 갱신(메모리 상)
+    CPU->>Draw: 최신 BoidDataBuffer 바인딩
+    Draw->>Draw: DrawMeshInstancedIndirect 호출
+```
+
+### `ForceCS` 내부 연산 구조
+```mermaid
+flowchart TD
+    A[현재 Boid P 로드] --> B[모든 Boid를 256개 타일로 순회]
+    B --> C[groupshared 메모리에 타일 로드]
+    C --> D[Separation 반경 검사]
+    C --> E[Alignment 반경 검사]
+    C --> F[Cohesion 반경 검사]
+    D --> G[누적/평균 후 Steering 계산]
+    E --> G
+    F --> G
+    G --> H[가중치 적용]
+    H --> I[ForceBuffer에 기록]
+```
+
+### 알고리즘 및 구현 상세
+1. 군집 행동(Boids Rule)
+   - Separation: 근접 개체와의 충돌 회피
+   - Alignment: 주변 속도 평균 방향으로 정렬
+   - Cohesion: 주변 중심 방향으로 응집
+2. 환경 반응
+   - 벽 바깥으로 이탈 시 반대 방향 가속(`avoidWall`)
+   - 마우스 입력으로 attract/repel 힘 주입
+3. 수치 적분
+   - Euler 적분으로 속도/위치 갱신
+   - `MaxSpeed`, `MaxSteerForce`로 안정성 확보
+4. 렌더링 전략
+   - Boid별 Transform을 CPU에서 만들지 않고 Vertex 단계에서 계산
+   - 속도 벡터를 기반으로 메시 방향 회전
+
+### 실행 방법
+1. Unity Hub에서 프로젝트를 열고 에디터 버전을 `6000.2.6f2`로 맞춥니다.
 2. `Assets/Scenes/Main.unity`를 엽니다.
-3. Play를 눌러 실행합니다.
+3. Play 버튼으로 실행합니다.
 
-## 조작법
-- `좌클릭`: 마우스 위치로 보이드 흡인 (초록 인디케이터)
-- `우클릭`: 보이드 반발 + 카메라 회전 (빨강 인디케이터)
-- `마우스 휠`: 줌 인/아웃
-- `ESC`: 종료
+### 조작 방법
+- 우클릭 드래그: 카메라 회전
+- 마우스 휠: 줌
+- 좌클릭: Boid 끌어당김
+- 우클릭: Boid 밀어냄
+- `Esc`: 빌드 실행 시 종료
 
-## UI 파라미터(현재 구현 기준)
-- Boid Count: `1000 ~ 65536` 슬라이더 값, 실제 반영은 `256` 배수로 반올림 후 Reset 시 재초기화
-- Speed: `1 ~ 20` (`MaxSpeed`)
-- Separation/Alignment/Cohesion: 각 `0 ~ 10` 가중치
-- Pause/Resume: `Time.timeScale` 제어
-- Reset: 현재 Boid Count 기준으로 GPU 버퍼 재생성
+### 런타임 튜닝 항목
+- Boid Count: UI 슬라이더 값은 `Reset` 클릭 시 실제 버퍼 재생성에 반영
+- Speed: 최대 이동 속도
+- Separation / Alignment / Cohesion: 각 행동 가중치
+- Pause / Resume: `Time.timeScale` 제어
 
-## 구현 포인트
-- `GPUBoids.cs`
-  - `ComputeBuffer` 2종 사용: 보이드 상태(`BoidData`), 힘 버퍼(`Vector3`)
-  - 매 프레임 커널 2회 Dispatch
-  - 벽 회피(`_AvoidWallWeight`) 및 마우스 attractor 파라미터 전달
-- `Boids.compute`
-  - `numthreads(256,1,1)` + `groupshared` 타일 캐시
-  - Separation/Alignment/Cohesion 계산 후 Euler 적분
-- `BoidRender.cs` + `BoidsRender.shader`
-  - 보이드 상태 버퍼를 머티리얼에 직접 바인딩
-  - 인스턴스별 위치/방향(속도 벡터 기반 회전) 변환을 GPU에서 처리
+### 성능/확장성 관점 정리
+- 장점
+  - CPU per-instance 업데이트를 제거해 개체 수 증가에 유리
+  - 렌더링과 시뮬레이션 모두 GPU 중심으로 통합
+  - 인터랙션이 있어도 파이프라인 단순성 유지
+- 한계
+  - 현재 이웃 탐색은 본질적으로 `O(n^2)` 연산 성격을 가짐
+  - Boid 수가 커질수록 GPU 연산량이 급격히 증가
+  - 입력 처리(우클릭)와 카메라 회전이 동시에 동작할 수 있음
+- 개선 아이디어
+  - Uniform Grid / Spatial Hash로 후보 이웃 축소
+  - Compute Shader 단계 분리(해시 생성/정렬/근접 탐색)
+  - LOD 기반 원거리 단순화 렌더링
+  - 인게임 벤치마크(Boid 수/FPS 자동 스윕) 추가
 
-## 주의사항
-- Compute Shader 블록 크기(`256`) 기준으로 동작하므로 보이드 수는 `256` 배수 사용을 권장합니다.
-- 보이드 수가 증가할수록 이웃 탐색 비용은 본질적으로 `O(n^2)`이므로 GPU 성능 영향을 크게 받습니다.
-- 본 프로젝트는 교육/포트폴리오 목적의 데모 구현입니다.
-
-## 참고
-- Craig Reynolds Boids: http://www.red3d.com/cwr/boids/
+### 트러블슈팅 기록
+- 이슈: 개체 수 증가 시 CPU 루프 기반 구현에서 프레임 하락
+- 대응: Boid 상태를 `ComputeBuffer`로 전환하고 GPU에서 힘 계산/적분 수행
+- 이슈: 인스턴스 수 증가에 따른 CPU Draw Call 오버헤드
+- 대응: `DrawMeshInstancedIndirect` 도입으로 드로우 호출 수 고정
+- 이슈: 파라미터 변경 즉시 반영 시 버퍼 재할당 타이밍 문제
+- 대응: Boid 수 변경은 `Reset` 시점에 반영하도록 분리
 
 ---
 
+<a id="english"></a>
 ## English
-Unity GPU Boids Simulation project using Compute Shaders and indirect instanced rendering.
 
-- Scene: `Assets/Scenes/Main.unity`
-- Core scripts: `GPUBoids.cs`, `Boids.compute`, `BoidRender.cs`
-- Unity version: `6000.2.6f2`
-- URP: `17.2.0`
+Large-scale boid flocking simulation built with Unity Compute Shaders and GPU indirect instancing.
 
-Controls:
-- Left click: attract boids
-- Right click: repel boids + rotate camera
-- Mouse wheel: zoom
-- ESC: quit
+### Highlights
+- Two-pass GPU simulation: `ForceCS` + `IntegrateCS`
+- GPU-driven rendering via `DrawMeshInstancedIndirect`
+- Real-time controls: boid count, speed, behavior weights, pause/reset
+- Interactive mouse attract/repel behavior
 
-The simulation runs in two compute passes (`ForceCS`, `IntegrateCS`) and renders via `DrawMeshInstancedIndirect` using GPU-resident boid data.
+### Run
+1. Open the project with Unity `6000.2.6f2`.
+2. Open `Assets/Scenes/Main.unity`.
+3. Press Play.
