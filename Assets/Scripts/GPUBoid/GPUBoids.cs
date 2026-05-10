@@ -5,7 +5,7 @@
 // 
 // Technical Highlights:
 // - GPU Compute Shader utilization for O(n²) neighbor calculations
-// - Double-buffered ComputeBuffer for read/write separation
+// - ComputeBuffer-backed simulation state shared by simulation and rendering
 // - Thread group optimization for GPU parallelism
 // - Craig Reynolds' Boids algorithm (Separation, Alignment, Cohesion)
 // ============================================================================
@@ -44,6 +44,8 @@ public class GPUBoids : MonoBehaviour
     /// GPU thread group size. Must match the [numthreads(256,1,1)] declaration in compute shader.
     /// </summary>
     private const int SIMULATION_BLOCK_SIZE = 256;
+    private const int MIN_BOID_COUNT = 256;
+    private const int MAX_BOID_COUNT = 65536;
     
     #endregion
 
@@ -51,7 +53,7 @@ public class GPUBoids : MonoBehaviour
     
     [Header("Population Settings")]
     [Tooltip("Total number of boids to simulate. Higher values require more GPU resources.")]
-    [Range(256, 32768)]
+    [Range(256, 65536)]
     public int MaxObjectNum = 16384;
 
     [Header("Flocking Behavior - Neighborhood Radii")]
@@ -161,7 +163,7 @@ public class GPUBoids : MonoBehaviour
     public void ReinitializeWithCount(int newCount)
     {
         ReleaseBuffer();
-        MaxObjectNum = Mathf.Clamp(newCount, 256, 65536);
+        MaxObjectNum = Mathf.Clamp(newCount, MIN_BOID_COUNT, MAX_BOID_COUNT);
         InitBuffer();
     }
     
@@ -175,6 +177,21 @@ public class GPUBoids : MonoBehaviour
     private void Start()
     {
         InitBuffer();
+    }
+
+    private void OnValidate()
+    {
+        MaxObjectNum = Mathf.Clamp(MaxObjectNum, MIN_BOID_COUNT, MAX_BOID_COUNT);
+        CohesionNeighborhoodRadius = Mathf.Max(0.0f, CohesionNeighborhoodRadius);
+        AlignmentNeighborhoodRadius = Mathf.Max(0.0f, AlignmentNeighborhoodRadius);
+        SeparateNeighborhoodRadius = Mathf.Max(0.0f, SeparateNeighborhoodRadius);
+        MaxSpeed = Mathf.Max(0.01f, MaxSpeed);
+        MaxSteerForce = Mathf.Max(0.0f, MaxSteerForce);
+        WallSize = new Vector3(
+            Mathf.Max(0.01f, WallSize.x),
+            Mathf.Max(0.01f, WallSize.y),
+            Mathf.Max(0.01f, WallSize.z)
+        );
     }
 
     /// <summary>
@@ -213,6 +230,22 @@ public class GPUBoids : MonoBehaviour
     /// </summary>
     private void InitBuffer()
     {
+        if (!SystemInfo.supportsComputeShaders)
+        {
+            Debug.LogError("GPUBoids requires compute shader support.", this);
+            enabled = false;
+            return;
+        }
+
+        if (BoidsCS == null)
+        {
+            Debug.LogError("GPUBoids requires a Boids compute shader reference.", this);
+            enabled = false;
+            return;
+        }
+
+        MaxObjectNum = Mathf.Clamp(MaxObjectNum, MIN_BOID_COUNT, MAX_BOID_COUNT);
+
         // Allocate GPU buffers with appropriate stride sizes
         _boidDataBuffer = new ComputeBuffer(MaxObjectNum, Marshal.SizeOf(typeof(BoidData)));
         _boidForceBuffer = new ComputeBuffer(MaxObjectNum, Marshal.SizeOf(typeof(Vector3)));
@@ -268,6 +301,11 @@ public class GPUBoids : MonoBehaviour
     /// </summary>
     private void Simulation()
     {
+        if (BoidsCS == null || _boidDataBuffer == null || _boidForceBuffer == null)
+        {
+            return;
+        }
+
         ComputeShader cs = BoidsCS;
         int kernelId = -1;
 

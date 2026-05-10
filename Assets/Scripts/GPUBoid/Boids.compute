@@ -119,8 +119,9 @@ void ForceCS
 )
 {
     const unsigned int P_ID = DTid.x; // Current Boid ID
-    float3 P_position = _BoidDataBufferRead[P_ID].position;
-    float3 P_velocity = _BoidDataBufferRead[P_ID].velocity;
+    const bool isActiveBoid = P_ID < (uint) _MaxBoidObjectNum;
+    float3 P_position = isActiveBoid ? _BoidDataBufferRead[P_ID].position : float3(0, 0, 0);
+    float3 P_velocity = isActiveBoid ? _BoidDataBufferRead[P_ID].velocity : float3(0, 0, 0);
     
     float3 force = float3(0, 0, 0);
     
@@ -141,7 +142,13 @@ void ForceCS
     for (uint N_block_ID = 0; N_block_ID < (uint) _MaxBoidObjectNum; N_block_ID += SIMULATION_BLOCK_SIZE)
     {
         // Load a block of boid data into shared memory
-        boid_data[GI] = _BoidDataBufferRead[N_block_ID + GI];
+        uint neighborID = N_block_ID + GI;
+        BoidData neighborData = (BoidData) 0;
+        if (neighborID < (uint) _MaxBoidObjectNum)
+        {
+            neighborData = _BoidDataBufferRead[neighborID];
+        }
+        boid_data[GI] = neighborData;
         
         // Wait for all threads in the group to finish loading
         GroupMemoryBarrierWithGroupSync();
@@ -149,6 +156,12 @@ void ForceCS
         // Compare current boid (P) against all boids in the loaded block (N)
         for (int N_tile_ID = 0; N_tile_ID < SIMULATION_BLOCK_SIZE; N_tile_ID++)
         {
+            uint N_ID = N_block_ID + (uint) N_tile_ID;
+            if (!isActiveBoid || N_ID >= (uint) _MaxBoidObjectNum)
+            {
+                continue;
+            }
+
             float3 N_position = boid_data[N_tile_ID].position;
             float3 N_velocity = boid_data[N_tile_ID].velocity;
             
@@ -180,6 +193,11 @@ void ForceCS
         }
         // Wait for all threads to finish processing the current block before loading the next
         GroupMemoryBarrierWithGroupSync();
+    }
+
+    if (!isActiveBoid)
+    {
+        return;
     }
 
     // --- Calculate final steering forces ---
@@ -236,9 +254,12 @@ void IntegrateCS
 )
 {
     const unsigned int P_ID = DTid.x; // Current Boid ID
+    if (P_ID >= (uint) _MaxBoidObjectNum)
+    {
+        return;
+    }
     
-    // Read current boid state (Note: Reading from Write buffer as it holds current state for next frame calculation? 
-    // Usually Read/Write are swapped. Assuming Logic handles Ping-Pong buffers correctly)
+    // This kernel updates the same boid data buffer after ForceCS has finished reading it.
     BoidData b = _BoidDataBufferWrite[P_ID]; 
     
     // Read the calculated flocking forces

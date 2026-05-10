@@ -36,6 +36,12 @@ public class BoidsRender : MonoBehaviour
     [Header("Dependencies")]
     [Tooltip("Reference to the GPUBoids simulation component")]
     public GPUBoids GPUBoidsScript;
+
+    [Tooltip("Optional prefab used as the visual fish model. The first MeshFilter or SkinnedMeshRenderer mesh is used for GPU instancing.")]
+    public GameObject InstancePrefab;
+
+    [Tooltip("When enabled, the prefab's first renderer material replaces Instance Render Material. The material still needs a GPUBoids-compatible shader.")]
+    public bool UsePrefabMaterial;
     
     #endregion
     
@@ -63,7 +69,17 @@ public class BoidsRender : MonoBehaviour
     
     #region Unity Lifecycle
     
-    private void Start()
+    private void Awake()
+    {
+        if (GPUBoidsScript == null)
+        {
+            GPUBoidsScript = GetComponent<GPUBoids>();
+        }
+
+        ApplyInstancePrefab();
+    }
+
+    private void OnEnable()
     {
         InitializeArgsBuffer();
     }
@@ -77,6 +93,16 @@ public class BoidsRender : MonoBehaviour
     {
         ReleaseArgsBuffer();
     }
+
+    private void OnValidate()
+    {
+        if (GPUBoidsScript == null)
+        {
+            GPUBoidsScript = GetComponent<GPUBoids>();
+        }
+
+        ApplyInstancePrefab();
+    }
     
     #endregion
     
@@ -87,11 +113,59 @@ public class BoidsRender : MonoBehaviour
     /// </summary>
     private void InitializeArgsBuffer()
     {
+        if (_argsBuffer != null)
+        {
+            return;
+        }
+
         _argsBuffer = new ComputeBuffer(
             1, 
             _argsArray.Length * sizeof(uint),
             ComputeBufferType.IndirectArguments
         );
+    }
+
+    [ContextMenu("Apply Instance Prefab")]
+    public void ApplyInstancePrefab()
+    {
+        if (InstancePrefab == null)
+        {
+            return;
+        }
+
+        Mesh resolvedMesh = null;
+        Material resolvedMaterial = null;
+
+        MeshFilter meshFilter = InstancePrefab.GetComponentInChildren<MeshFilter>();
+        if (meshFilter != null)
+        {
+            resolvedMesh = meshFilter.sharedMesh;
+            MeshRenderer meshRenderer = meshFilter.GetComponent<MeshRenderer>();
+            if (meshRenderer != null)
+            {
+                resolvedMaterial = meshRenderer.sharedMaterial;
+            }
+        }
+
+        if (resolvedMesh == null)
+        {
+            SkinnedMeshRenderer skinnedMeshRenderer = InstancePrefab.GetComponentInChildren<SkinnedMeshRenderer>();
+            if (skinnedMeshRenderer != null)
+            {
+                resolvedMesh = skinnedMeshRenderer.sharedMesh;
+                resolvedMaterial = skinnedMeshRenderer.sharedMaterial;
+            }
+        }
+
+        if (resolvedMesh != null)
+        {
+            InstanceMesh = resolvedMesh;
+        }
+
+        if (UsePrefabMaterial && resolvedMaterial != null)
+        {
+            InstanceRenderMaterial = resolvedMaterial;
+        }
     }
     
     /// <summary>
@@ -128,13 +202,21 @@ public class BoidsRender : MonoBehaviour
         // Validate rendering prerequisites
         if (InstanceRenderMaterial == null || 
             GPUBoidsScript == null || 
+            InstanceMesh == null ||
+            _argsBuffer == null ||
+            GPUBoidsScript.GetBoidDataBuffer() == null ||
             !SystemInfo.supportsInstancing)
         {
             return;
         }
         
         // Configure indirect draw arguments
-        uint indexCount = (InstanceMesh != null) ? (uint)InstanceMesh.GetIndexCount(0) : 0;
+        uint indexCount = (uint)InstanceMesh.GetIndexCount(0);
+        if (indexCount == 0)
+        {
+            return;
+        }
+
         _argsArray[0] = indexCount;                              // Index count per instance
         _argsArray[1] = (uint)GPUBoidsScript.GetMaxObjectNum();  // Instance count
         _argsBuffer.SetData(_argsArray);
