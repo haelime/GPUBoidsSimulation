@@ -27,7 +27,7 @@ CPU 중심 구현에서 발생하는 병목(개체 수 증가 시 프레임 하�
 #### 장점
 - CPU per-instance 업데이트를 제거해 개체 수 증가에 유리
 - 시뮬레이션과 렌더링을 GPU 중심으로 일관되게 구성
-- 입력 상호작용이 있어도 파이프라인 단순성 유지
+- 입력 상호작용이 있어도 일관된 GPU 파이프라인 유지
 
 #### 현재 한계
 - 이웃 탐색은 본질적으로 `O(n^2)` 성격
@@ -37,8 +37,8 @@ CPU 중심 구현에서 발생하는 병목(개체 수 증가 시 프레임 하�
 #### 개선 아이디어
 - Uniform Grid / Spatial Hash로 이웃 후보군 축소
 - Compute 단계 분리(해시 생성/정렬/근접 탐색)
-- LOD 기반 원거리 단순화 렌더링
-- 인게임 벤치마크(Boid 수/FPS 자동 스윕) 추가
+- LOD 기반 원거리 저비용 렌더링
+- 벤치마크 CSV 시각화 및 기기별 결과 비교
 
 ### 트러블슈팅
 - 이슈: 개체 수 증가 시 CPU 루프 기반 구현에서 프레임 하락
@@ -69,3 +69,15 @@ Large-scale boid flocking simulation built with Unity Compute Shaders and GPU in
 1. Open the project with Unity `6000.2.6f2`.
 2. Open `Assets/Scenes/Main.unity`.
 3. Press Play.
+
+### Profiling
+
+Add `BoidBenchmarkRunner` to the GameObject that owns `GPUBoids`, enter Play
+Mode, and run **Run Boid Benchmark** from the component context menu. The
+runner sweeps 1,024 to 16,384 boids after a warm-up and writes a CSV file to
+`Application.persistentDataPath`.
+
+The CSV places theoretical `N²` pair checks next to median/p95 frame time and
+available CPU/GPU frame timings. GPU timing support depends on the graphics API
+and platform; a zero value means Unity did not expose that sample. Run a player
+build with VSync disabled for comparable measurements.
