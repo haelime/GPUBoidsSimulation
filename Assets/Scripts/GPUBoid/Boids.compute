@@ -119,6 +119,7 @@ void ForceCS
 )
 {
     const unsigned int P_ID = DTid.x; // Current Boid ID
+    // Inactive lanes must still reach both group barriers; do not return early here.
     const bool isActiveBoid = P_ID < (uint) _MaxBoidObjectNum;
     float3 P_position = isActiveBoid ? _BoidDataBufferRead[P_ID].position : float3(0, 0, 0);
     float3 P_velocity = isActiveBoid ? _BoidDataBufferRead[P_ID].velocity : float3(0, 0, 0);

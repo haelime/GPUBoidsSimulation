@@ -17,9 +17,6 @@ using System.Runtime.InteropServices;
 /// GPU-accelerated Boid flocking simulation controller.
 /// Manages compute shader dispatch and buffer lifecycle for massively parallel boid simulation.
 /// </summary>
-/// <remarks>
-/// Performance: Capable of simulating 16,384+ boids at 60fps.
-/// </remarks>
 public class GPUBoids : MonoBehaviour
 {
     #region Data Structures
@@ -339,7 +336,7 @@ public class GPUBoids : MonoBehaviour
         cs.Dispatch(kernelId, threadGroupSize, 1, 1);
 
         // ===== PASS 2: Integration (Euler Method) =====
-        // Apply calculated forces to update velocity and position
+        // ForceCS must finish reading all neighbors before this pass overwrites their state.
         kernelId = cs.FindKernel("IntegrateCS");
         cs.SetFloat("_DeltaTime", Time.deltaTime);
         cs.SetBuffer(kernelId, "_BoidForceBufferRead", _boidForceBuffer);

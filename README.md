@@ -2,6 +2,16 @@
 
 [한국어](#korean) | [English](#english)
 
+[포트폴리오: Boids의 원리와 GPU 구현](https://haelime.github.io/posts/gpu-boids-simulation/)
+
+### 핵심 코드
+
+- [GPUBoids.cs](Assets/Scripts/GPUBoid/GPUBoids.cs): GPU 버퍼 초기화, ForceCS와 IntegrateCS 순차 dispatch
+- [Boids.compute](Assets/Scripts/GPUBoid/Boids.compute): 공유 메모리를 이용한 이웃 탐색과 조향력 계산
+- [BoidRender.cs](Assets/Scripts/GPUBoid/BoidRender.cs): 시뮬레이션 버퍼를 사용하는 indirect instancing
+
+두 커널 분리, 공유 메모리와 indirect instancing은 [Unity Graphics Programming Vol.1](https://github.com/IndieVisualLab/UnityGraphicsProgrammingSeries)의 샘플을 참고했습니다. 마우스 위치를 향한 attraction/repulsion과 데모 조작 UI를 추가했습니다. 이웃 탐색은 여전히 `O(N²)`이며 실제 성능은 GPU, 개체 수와 렌더링 설정에 따라 달라집니다.
+
 <a id="korean"></a>
 ## 한국어
 
